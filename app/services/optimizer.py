@@ -73,6 +73,10 @@ def perception_to_targets(perception: PerceptionMap, base_features: FeatureMap) 
         slider = float(np.clip(slider, 0.0, 100.0))
         neutral = base_features.get(key, 0.5)
         targets[key] = float(np.clip(neutral + ((slider - 50.0) / 50.0) * 0.38, 0.02, 0.98))
+    blurry = float(np.clip(perception.get("blurry", 50.0), 0.0, 100.0))
+    if blurry != 50.0:
+        blur_direction = (blurry - 50.0) / 50.0
+        targets["sharpness"] = float(np.clip(targets["sharpness"] - blur_direction * 0.38, 0.02, 0.98))
     return targets
 
 

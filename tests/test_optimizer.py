@@ -2,7 +2,7 @@ import app.services.generator as generator
 from PIL import Image
 
 from app.services.generator import generate_image
-from app.services.optimizer import image_features, optimizer
+from app.services.optimizer import image_features, optimizer, perception_to_targets
 from app.services.perception_vectors import slider_weights
 
 
@@ -73,3 +73,20 @@ def test_perception_vectors_map_sliders_to_model_directions():
     assert weights["warmth"] > 0
     assert weights["sharpness"] == 0.0
     assert weights["blurry"] > 0.0
+
+
+def test_blurry_slider_targets_lower_sharpness():
+    base_features = {
+        "brightness": 0.5,
+        "contrast": 0.5,
+        "saturation": 0.5,
+        "warmth": 0.5,
+        "sharpness": 0.5,
+        "focus": 0.5,
+        "entropy": 0.5,
+    }
+    blurry = perception_to_targets({"blurry": 100, "sharpness": 50}, base_features)
+    crisp = perception_to_targets({"blurry": 0, "sharpness": 50}, base_features)
+
+    assert blurry["sharpness"] < base_features["sharpness"]
+    assert crisp["sharpness"] > base_features["sharpness"]

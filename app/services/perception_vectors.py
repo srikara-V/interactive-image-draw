@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict
 
 import torch
+import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[2]
 VECTOR_JSON_FILE = ROOT / "vector_generation" / "perception_vectors.json"
@@ -68,7 +69,7 @@ def load_vector_tensors(device: str, dtype: torch.dtype) -> Dict[str, torch.Tens
             "Missing %s. Run `python vector_generation/generate_vectors.py` first." % VECTOR_TENSOR_FILE
         )
     payload = torch.load(VECTOR_TENSOR_FILE, map_location=device, weights_only=True)
-    raw_vectors = payload.get("vectors", {})
+    raw_vectors = payload.get("latent_vectors") or payload.get("vectors", {})
     return {
         name: tensor.to(device=device, dtype=dtype)
         for name, tensor in raw_vectors.items()
@@ -76,17 +77,28 @@ def load_vector_tensors(device: str, dtype: torch.dtype) -> Dict[str, torch.Tens
     }
 
 
-def steering_vector(perception: Dict[str, float], device: str, dtype: torch.dtype, threshold: float = 0.04) -> torch.Tensor:
+def steering_vector(
+    perception: Dict[str, float],
+    device: str,
+    dtype: torch.dtype,
+    latent_shape: torch.Size,
+    threshold: float = 0.04,
+) -> torch.Tensor:
     weights = slider_weights(perception)
     vectors = load_vector_tensors(device=device, dtype=dtype)
-    available = list(vectors.values())
-    if not available:
+    if not vectors:
         raise ValueError("No perception vectors are available in %s." % VECTOR_TENSOR_FILE)
-    combined = torch.zeros_like(available[0], device=device, dtype=dtype)
+    combined = torch.zeros(latent_shape, device=device, dtype=dtype)
     for name, weight in weights.items():
         if abs(weight) < threshold:
             continue
         vector = vectors.get(name)
         if vector is not None:
+            if vector.ndim == 3:
+                vector = vector.unsqueeze(0)
+            if vector.shape[-2:] != latent_shape[-2:]:
+                vector = F.interpolate(vector, size=latent_shape[-2:], mode="bilinear", align_corners=False)
+            if vector.shape != latent_shape:
+                vector = vector.expand(latent_shape)
             combined = combined + float(weight) * vector
     return combined

@@ -3,7 +3,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Dict, List, Optional
 
+import numpy as np
 import torch
+from diffusers import DDIMInverseScheduler, DDIMScheduler
 from PIL import Image
 
 from app.services.perception_vectors import steering_vector
@@ -203,15 +205,113 @@ def _encode_prompt_embeddings(pipeline, prompt: str, negative_prompt: str, guida
     return prompt_embeds, negative_prompt_embeds
 
 
-def _steer_prompt_embeddings(
+def _image_to_tensor(image: Image.Image, device: str, dtype: torch.dtype) -> torch.Tensor:
+    image = image.convert("RGB")
+    width, height = image.size
+    width = width - (width % 8)
+    height = height - (height % 8)
+    if image.size != (width, height):
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+    array = np.asarray(image, dtype=np.float32) / 255.0
+    values = torch.from_numpy(array).permute(2, 0, 1)
+    values = values.unsqueeze(0) * 2.0 - 1.0
+    return values.to(device=device, dtype=dtype)
+
+
+def _latents_to_image(pipeline, latents: torch.Tensor) -> Image.Image:
+    scaling = pipeline.vae.config.scaling_factor
+    decoded = pipeline.vae.decode(latents / scaling, return_dict=False)[0]
+    decoded = (decoded / 2 + 0.5).clamp(0, 1)
+    array = decoded.detach().cpu().permute(0, 2, 3, 1).float().numpy()[0]
+    return Image.fromarray((array * 255).round().astype("uint8"), mode="RGB")
+
+
+def _encode_image_latents(pipeline, image: Image.Image, settings: DiffusionSettings) -> torch.Tensor:
+    tensor = _image_to_tensor(image, settings.device, settings.dtype)
+    with torch.no_grad():
+        latents = pipeline.vae.encode(tensor).latent_dist.mode()
+    return latents * pipeline.vae.config.scaling_factor
+
+
+def _noise_prediction(
+    pipeline,
+    scheduler,
+    latents: torch.Tensor,
+    timestep: torch.Tensor,
     prompt_embeds: torch.Tensor,
-    perception: Dict[str, float],
-    settings: DiffusionSettings,
+    negative_prompt_embeds: torch.Tensor,
+    guidance_scale: float,
 ) -> torch.Tensor:
-    direction = steering_vector(perception, device=settings.device, dtype=prompt_embeds.dtype)
-    scale = float(os.getenv("IMAGE_VECTOR_STEERING_SCALE", "1.8"))
-    steered = prompt_embeds + direction.view(1, 1, -1) * scale
-    return steered.to(device=prompt_embeds.device, dtype=prompt_embeds.dtype)
+    do_guidance = guidance_scale > 1.0 and negative_prompt_embeds is not None
+    if do_guidance:
+        latent_model_input = torch.cat([latents, latents])
+        encoder_hidden_states = torch.cat([negative_prompt_embeds, prompt_embeds])
+    else:
+        latent_model_input = latents
+        encoder_hidden_states = prompt_embeds
+    latent_model_input = scheduler.scale_model_input(latent_model_input, timestep)
+    noise_pred = pipeline.unet(
+        latent_model_input,
+        timestep,
+        encoder_hidden_states=encoder_hidden_states,
+        return_dict=False,
+    )[0]
+    if do_guidance:
+        noise_uncond, noise_text = noise_pred.chunk(2)
+        noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
+    return noise_pred
+
+
+def _ddim_invert(
+    pipeline,
+    latents: torch.Tensor,
+    prompt_embeds: torch.Tensor,
+    negative_prompt_embeds: torch.Tensor,
+    guidance_scale: float,
+    steps: int,
+) -> torch.Tensor:
+    inverse_scheduler = DDIMInverseScheduler.from_config(pipeline.scheduler.config)
+    inverse_scheduler.set_timesteps(steps, device=latents.device)
+    inverted = latents
+    with torch.no_grad():
+        for timestep in inverse_scheduler.timesteps:
+            noise_pred = _noise_prediction(
+                pipeline,
+                inverse_scheduler,
+                inverted,
+                timestep,
+                prompt_embeds,
+                negative_prompt_embeds,
+                guidance_scale,
+            )
+            inverted = inverse_scheduler.step(noise_pred, timestep, inverted, return_dict=False)[0]
+    return inverted
+
+
+def _ddim_sample(
+    pipeline,
+    latents: torch.Tensor,
+    prompt_embeds: torch.Tensor,
+    negative_prompt_embeds: torch.Tensor,
+    guidance_scale: float,
+    steps: int,
+) -> torch.Tensor:
+    scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
+    scheduler.set_timesteps(steps, device=latents.device)
+    sampled = latents
+    with torch.no_grad():
+        for timestep in scheduler.timesteps:
+            noise_pred = _noise_prediction(
+                pipeline,
+                scheduler,
+                sampled,
+                timestep,
+                prompt_embeds,
+                negative_prompt_embeds,
+                guidance_scale,
+            )
+            sampled = scheduler.step(noise_pred, timestep, sampled, return_dict=False)[0]
+    return sampled
 
 
 def generate_image(prompt: str, seed: int = 7, width: int = 768, height: int = 768, style: str = "auto") -> Image.Image:
@@ -249,32 +349,43 @@ def refine_image(
     settings = _settings()
     pipeline = _load_img2img_pipeline()
     base_prompt = _style_prompt(prompt, style)
-    refine_prompt = "%s, preserve the same subject and composition" % base_prompt
-    guidance_scale = _img2img_guidance_scale()
+    guidance_scale = max(_img2img_guidance_scale(), 1.05)
     prompt_embeds, negative_prompt_embeds = _encode_prompt_embeddings(
         pipeline=pipeline,
-        prompt=refine_prompt,
+        prompt=base_prompt,
         negative_prompt=DEFAULT_NEGATIVE_PROMPT,
         guidance_scale=guidance_scale,
         settings=settings,
     )
-    prompt_embeds = _steer_prompt_embeddings(prompt_embeds, perception, settings)
 
     size = image.size
-    init_image = image.convert("RGB")
-    result = pipeline(
+    steps = _img2img_steps()
+    base_latents = _encode_image_latents(pipeline, image, settings)
+    inverted = _ddim_invert(
+        pipeline=pipeline,
+        latents=base_latents,
         prompt_embeds=prompt_embeds,
         negative_prompt_embeds=negative_prompt_embeds,
-        image=init_image,
-        strength=float(max(0.25, min(strength, 0.55))),
-        num_inference_steps=_img2img_steps(),
         guidance_scale=guidance_scale,
-        generator=_generator_for_seed(seed, settings.device),
+        steps=steps,
     )
-    refined: Optional[Image.Image] = result.images[0] if result.images else None
-    if refined is None:
-        raise ModelLoadError("The diffusion img2img pipeline did not return an image.")
-    return refined.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+    direction = steering_vector(
+        perception,
+        device=settings.device,
+        dtype=inverted.dtype,
+        latent_shape=inverted.shape,
+    )
+    scale = float(os.getenv("IMAGE_LATENT_STEERING_SCALE", "5.5"))
+    proposal_latents = inverted + direction * scale * float(max(0.05, min(strength, 0.75)))
+    sampled = _ddim_sample(
+        pipeline=pipeline,
+        latents=proposal_latents,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+        guidance_scale=guidance_scale,
+        steps=steps,
+    )
+    return _latents_to_image(pipeline, sampled).resize(size, Image.Resampling.LANCZOS)
 
 
 def model_info() -> Dict[str, str]:
