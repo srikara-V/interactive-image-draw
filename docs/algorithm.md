@@ -32,9 +32,11 @@ The high-quality version uses a diffusion model:
 
 The result is a controlled random walk through plausible images, where the base model acts as a prior and the user's edit intent acts as a reward.
 
-## Local Prototype
+## Current Implementation
 
-The current repo keeps the same sampler shape but uses CPU-friendly image features:
+The current repo uses Hugging Face Diffusers for initial text-to-image generation. The default is `stabilityai/sd-turbo`, configurable through `IMAGE_MODEL_ID`.
+
+The sampler keeps the same MH shape but currently scores CPU-friendly image features:
 
 - `brightness`: mean luminance
 - `contrast`: luminance standard deviation

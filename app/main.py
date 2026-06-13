@@ -4,7 +4,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from app.services.generator import available_styles, generate_image
+from app.services.generator import ModelLoadError, available_styles, generate_image, model_info
 from app.services.image_io import image_to_data_url, read_upload_image
 from app.services.optimizer import image_features, optimizer
 
@@ -70,18 +70,21 @@ def _chain_payload(chain, proposal=None, accepted: Optional[bool] = None, accept
 
 @app.get("/api/health")
 def health() -> Dict[str, object]:
-    return {"ok": True, "styles": available_styles()}
+    return {"ok": True, "styles": available_styles(), "model": model_info()}
 
 
 @app.post("/api/generate")
 def generate(request: GenerateRequest) -> Dict[str, object]:
-    image = generate_image(
-        prompt=request.prompt,
-        seed=request.seed,
-        width=request.width,
-        height=request.height,
-        style=request.style,
-    )
+    try:
+        image = generate_image(
+            prompt=request.prompt,
+            seed=request.seed,
+            width=request.width,
+            height=request.height,
+            style=request.style,
+        )
+    except ModelLoadError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     chain = optimizer.create_chain(prompt=request.prompt, image=image, seed=request.seed)
     return _chain_payload(chain)
 

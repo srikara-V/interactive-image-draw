@@ -1,8 +1,32 @@
+import app.services.generator as generator
+from PIL import Image
+
 from app.services.generator import generate_image
 from app.services.optimizer import image_features, optimizer
 
 
-def test_generated_image_has_expected_features():
+class FakePipeline:
+    def __call__(self, **kwargs):
+        return type("Result", (), {"images": [Image.new("RGB", (kwargs["width"], kwargs["height"]), (120, 150, 190))]})()
+
+
+def test_generate_image_uses_diffusion_pipeline(monkeypatch):
+    fake = FakePipeline()
+    calls = []
+
+    def load_pipeline():
+        calls.append(True)
+        return fake
+
+    monkeypatch.setattr(generator, "_load_pipeline", load_pipeline)
+    image = generate_image("cinematic product shot", seed=11, width=512, height=512)
+
+    assert calls
+    assert image.size == (512, 512)
+
+
+def test_generated_image_has_expected_features(monkeypatch):
+    monkeypatch.setattr(generator, "_load_pipeline", lambda: FakePipeline())
     image = generate_image("cinematic product shot of a wearable device", seed=11, width=512, height=512)
     features = image_features(image)
 
@@ -11,7 +35,8 @@ def test_generated_image_has_expected_features():
     assert all(0.0 <= value <= 1.0 for value in features.values())
 
 
-def test_metropolis_step_records_history():
+def test_metropolis_step_records_history(monkeypatch):
+    monkeypatch.setattr(generator, "_load_pipeline", lambda: FakePipeline())
     image = generate_image("editorial portrait with dramatic contrast", seed=3, width=512, height=512)
     chain = optimizer.create_chain("editorial portrait with dramatic contrast", image, seed=3)
     result = optimizer.step(

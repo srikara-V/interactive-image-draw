@@ -2,7 +2,7 @@
 
 Latent Atelier is a web image-editing prototype built around a Metropolis-Hastings sampler for perceptual edits. The production-grade idea is DDIM inversion plus latent steering: invert an image into a diffusion latent, propose a step along an edit/perception vector, then accept or reject it with an MH rule that balances the edit objective against the base model's plausibility distribution.
 
-This repo ships a fast local version of that workflow so the app runs without a GPU or paid API key. The backend generates a prompt-conditioned image, treats image features as a lightweight latent state, proposes localized latent-style edits, and accepts them with the same objective/plausibility tradeoff a diffusion implementation would use.
+This repo uses a real Hugging Face Diffusers text-to-image model for generation. The default model is `stabilityai/sd-turbo`, which is small enough for local demos compared with SDXL/FLUX while still being an actual diffusion pipeline. The backend then treats image features as a lightweight optimizer state, proposes localized latent-style edits, and accepts them with the same objective/plausibility tradeoff a diffusion implementation would use.
 
 ## Why This Project Is Interesting
 
@@ -13,7 +13,7 @@ This repo ships a fast local version of that workflow so the app runs without a 
 
 ## Stack
 
-- Backend: FastAPI, Pillow, NumPy
+- Backend: FastAPI, Hugging Face Diffusers, PyTorch, Pillow, NumPy
 - Frontend: React, TypeScript, Vite, lucide-react
 - Tests: pytest
 
@@ -46,6 +46,17 @@ npm run dev
 ```
 
 Open the Vite URL, usually `http://localhost:5173`.
+
+The first generation downloads the diffusion model from Hugging Face into your normal Hugging Face cache. You can swap models without code changes:
+
+```bash
+export IMAGE_MODEL_ID=stabilityai/sd-turbo
+export IMAGE_DEVICE=mps
+export IMAGE_DTYPE=float32
+export IMAGE_NUM_INFERENCE_STEPS=4
+```
+
+For higher quality on a strong GPU, try a larger model such as `Lykon/dreamshaper-8` and increase `IMAGE_NUM_INFERENCE_STEPS`.
 
 ## How The Sampler Works
 
