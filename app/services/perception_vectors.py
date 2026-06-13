@@ -47,14 +47,18 @@ def slider_weights(perception: Dict[str, float]) -> VectorWeights:
         return max(-1.0, min((float(perception.get(key, 50.0)) - 50.0) / 50.0, 1.0))
 
     weights: VectorWeights = {
+        "blurry": direction("blurry"),
         "contrast": direction("contrast"),
         "saturation": direction("saturation"),
         "warmth": direction("warmth"),
         "sharpness": direction("sharpness"),
     }
     if weights["sharpness"] < 0:
-        weights["blurry"] = -weights["sharpness"]
+        weights["blurry"] = max(weights["blurry"], -weights["sharpness"])
         weights["sharpness"] = 0.0
+    if weights["blurry"] < 0:
+        weights["sharpness"] = max(weights["sharpness"], -weights["blurry"])
+        weights["blurry"] = 0.0
     return weights
 
 

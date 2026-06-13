@@ -27,26 +27,33 @@ type ChainPayload = {
   history: Array<Record<string, number>>;
 };
 
-type SliderKey = "brightness" | "contrast" | "saturation" | "warmth" | "sharpness" | "focus" | "entropy";
+type VectorKey = "blurry" | "contrast" | "saturation" | "warmth" | "sharpness";
+type FeatureKey = "brightness" | "contrast" | "saturation" | "warmth" | "sharpness" | "focus" | "entropy";
 
-const sliderLabels: Array<{ key: SliderKey; label: string; hint: string }> = [
-  { key: "brightness", label: "Brightness", hint: "Luminance target" },
-  { key: "contrast", label: "Contrast", hint: "Local value separation" },
-  { key: "saturation", label: "Saturation", hint: "Color intensity" },
-  { key: "warmth", label: "Warmth", hint: "Red/blue color balance" },
-  { key: "sharpness", label: "Sharpness", hint: "Edge clarity" },
-  { key: "focus", label: "Focus", hint: "Center detail bias" },
-  { key: "entropy", label: "Texture", hint: "Histogram complexity" }
+const vectorLabels: Array<{ key: VectorKey; label: string; hint: string }> = [
+  { key: "blurry", label: "Blurry", hint: "Model vector: soft blur vs crisp detail" },
+  { key: "contrast", label: "Contrast", hint: "Model vector: high contrast vs flat contrast" },
+  { key: "saturation", label: "Saturation", hint: "Model vector: vivid color vs muted color" },
+  { key: "warmth", label: "Warmth", hint: "Model vector: warm golden color vs cool blue color" },
+  { key: "sharpness", label: "Sharpness", hint: "Model vector: crisp detail vs soft detail" }
 ];
 
-const initialPerception: Record<SliderKey, number> = {
-  brightness: 52,
+const featureLabels: Array<{ key: FeatureKey; label: string }> = [
+  { key: "brightness", label: "Brightness" },
+  { key: "contrast", label: "Contrast" },
+  { key: "saturation", label: "Saturation" },
+  { key: "warmth", label: "Warmth" },
+  { key: "sharpness", label: "Sharpness" },
+  { key: "focus", label: "Focus" },
+  { key: "entropy", label: "Texture" }
+];
+
+const initialPerception: Record<VectorKey, number> = {
+  blurry: 50,
   contrast: 72,
   saturation: 62,
   warmth: 58,
-  sharpness: 76,
-  focus: 78,
-  entropy: 54
+  sharpness: 76
 };
 
 const styles = ["auto", "abstract", "cinematic", "concept", "editorial", "product"];
@@ -122,7 +129,7 @@ export function App() {
   const [prompt, setPrompt] = useState("cinematic product shot of a translucent wearable device on a workbench");
   const [seed, setSeed] = useState(11);
   const [style, setStyle] = useState("auto");
-  const [perception, setPerception] = useState<Record<SliderKey, number>>(initialPerception);
+  const [perception, setPerception] = useState<Record<VectorKey, number>>(initialPerception);
   const [temperature, setTemperature] = useState(0.38);
   const [driftBudget, setDriftBudget] = useState(0.22);
   const [stepSize, setStepSize] = useState(0.42);
@@ -132,7 +139,7 @@ export function App() {
 
   const featureMetrics = useMemo(() => {
     if (!chain?.metrics) return [];
-    return sliderLabels.map((item) => ({
+    return featureLabels.map((item) => ({
       label: item.label,
       value: chain.metrics[`feature_${item.key}`]
     }));
@@ -297,7 +304,7 @@ export function App() {
           </div>
 
           <div className="slider-stack">
-            {sliderLabels.map((item) => (
+            {vectorLabels.map((item) => (
               <SliderRow
                 key={item.key}
                 label={item.label}
