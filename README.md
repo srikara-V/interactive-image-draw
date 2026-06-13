@@ -80,7 +80,7 @@ alpha = min(1, exp((energy(x') - energy(x)) / temperature))
 
 The local implementation uses contrast, brightness, warmth, saturation, sharpness, focus, entropy, and base-image drift as surrogate features. A diffusion version would replace the surrogate latent with DDIM-inverted latents and replace the plausibility score with model log-probability or a calibrated diffusion prior.
 
-The `Refine` button now uses the diffusion model directly through img2img. It loads semantic perception directions from `vector_generation/perception_vectors.json`, converts the slider weights into a weighted refinement prompt, proposes a low-strength img2img edit to preserve composition, then applies the same MH accept/reject rule against the target features and drift prior.
+The `Refine` button now uses the diffusion model directly through img2img. It loads semantic perception directions from `vector_generation/perception_vectors.pt`, adds the weighted direction tensor to the model's prompt-conditioning embeddings, proposes a low-strength img2img edit to preserve composition, then applies the same MH accept/reject rule against the target features and drift prior. The prompt is not expanded with words like "sharp" or "warm"; the sliders steer tensors.
 
 Regenerate model-specific perception vectors with:
 

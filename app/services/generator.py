@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import torch
 from PIL import Image
 
-from app.services.perception_vectors import weighted_refinement_phrases
+from app.services.perception_vectors import steering_vector
 
 
 DEFAULT_MODEL_ID = "stabilityai/sd-turbo"
@@ -188,6 +188,32 @@ def _img2img_steps() -> int:
     return 22
 
 
+def _encode_prompt_embeddings(pipeline, prompt: str, negative_prompt: str, guidance_scale: float, settings: DiffusionSettings):
+    do_guidance = guidance_scale > 1.0
+    encoded = pipeline.encode_prompt(
+        prompt=prompt,
+        device=settings.device,
+        num_images_per_prompt=1,
+        do_classifier_free_guidance=do_guidance,
+        negative_prompt=negative_prompt,
+    )
+    if not isinstance(encoded, tuple) or len(encoded) < 2:
+        raise ModelLoadError("The diffusion pipeline did not return prompt embeddings.")
+    prompt_embeds, negative_prompt_embeds = encoded[0], encoded[1]
+    return prompt_embeds, negative_prompt_embeds
+
+
+def _steer_prompt_embeddings(
+    prompt_embeds: torch.Tensor,
+    perception: Dict[str, float],
+    settings: DiffusionSettings,
+) -> torch.Tensor:
+    direction = steering_vector(perception, device=settings.device, dtype=prompt_embeds.dtype)
+    scale = float(os.getenv("IMAGE_VECTOR_STEERING_SCALE", "1.8"))
+    steered = prompt_embeds + direction.view(1, 1, -1) * scale
+    return steered.to(device=prompt_embeds.device, dtype=prompt_embeds.dtype)
+
+
 def generate_image(prompt: str, seed: int = 7, width: int = 768, height: int = 768, style: str = "auto") -> Image.Image:
     settings = _settings()
     pipeline = _load_pipeline()
@@ -222,29 +248,27 @@ def refine_image(
 ) -> Image.Image:
     settings = _settings()
     pipeline = _load_img2img_pipeline()
-    positive_phrases, negative_phrases, _weights = weighted_refinement_phrases(perception)
     base_prompt = _style_prompt(prompt, style)
-    if positive_phrases:
-        refine_prompt = "%s, preserve the same subject and composition, %s" % (
-            base_prompt,
-            ", ".join(positive_phrases),
-        )
-    else:
-        refine_prompt = "%s, preserve the same subject and composition, refined realistic detail" % base_prompt
-
-    negative_prompt = DEFAULT_NEGATIVE_PROMPT
-    if negative_phrases:
-        negative_prompt = "%s, %s" % (negative_prompt, ", ".join(negative_phrases))
+    refine_prompt = "%s, preserve the same subject and composition" % base_prompt
+    guidance_scale = _img2img_guidance_scale()
+    prompt_embeds, negative_prompt_embeds = _encode_prompt_embeddings(
+        pipeline=pipeline,
+        prompt=refine_prompt,
+        negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+        guidance_scale=guidance_scale,
+        settings=settings,
+    )
+    prompt_embeds = _steer_prompt_embeddings(prompt_embeds, perception, settings)
 
     size = image.size
     init_image = image.convert("RGB")
     result = pipeline(
-        prompt=refine_prompt,
-        negative_prompt=negative_prompt,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
         image=init_image,
         strength=float(max(0.25, min(strength, 0.55))),
         num_inference_steps=_img2img_steps(),
-        guidance_scale=_img2img_guidance_scale(),
+        guidance_scale=guidance_scale,
         generator=_generator_for_seed(seed, settings.device),
     )
     refined: Optional[Image.Image] = result.images[0] if result.images else None

@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
+import torch
 
 ROOT = Path(__file__).resolve().parents[2]
-VECTOR_FILE = ROOT / "vector_generation" / "perception_vectors.json"
+VECTOR_JSON_FILE = ROOT / "vector_generation" / "perception_vectors.json"
+VECTOR_TENSOR_FILE = ROOT / "vector_generation" / "perception_vectors.pt"
 
 VectorWeights = Dict[str, float]
 
@@ -31,18 +33,9 @@ VECTOR_DEFINITIONS: Dict[str, Dict[str, str]] = {
     },
 }
 
-RUNTIME_PHRASES: Dict[str, Dict[str, str]] = {
-    "blurry": {"positive": "soft blur", "negative": "crisp detail"},
-    "contrast": {"positive": "high contrast", "negative": "low contrast"},
-    "saturation": {"positive": "vibrant color", "negative": "muted color"},
-    "warmth": {"positive": "warm golden color", "negative": "cool blue color"},
-    "sharpness": {"positive": "sharp fine detail", "negative": "soft detail"},
-}
-
-
 def load_vector_metadata() -> Dict[str, object]:
-    if VECTOR_FILE.exists():
-        return json.loads(VECTOR_FILE.read_text())
+    if VECTOR_JSON_FILE.exists():
+        return json.loads(VECTOR_JSON_FILE.read_text())
     return {
         "model_id": "runtime-fallback",
         "vectors": VECTOR_DEFINITIONS,
@@ -65,39 +58,31 @@ def slider_weights(perception: Dict[str, float]) -> VectorWeights:
     return weights
 
 
-def weighted_refinement_phrases(perception: Dict[str, float], threshold: float = 0.08) -> Tuple[List[str], List[str], VectorWeights]:
-    metadata = load_vector_metadata()
-    vectors = metadata.get("vectors", VECTOR_DEFINITIONS)
-    weights = slider_weights(perception)
-    positive: List[str] = []
-    negative: List[str] = []
+def load_vector_tensors(device: str, dtype: torch.dtype) -> Dict[str, torch.Tensor]:
+    if not VECTOR_TENSOR_FILE.exists():
+        raise FileNotFoundError(
+            "Missing %s. Run `python vector_generation/generate_vectors.py` first." % VECTOR_TENSOR_FILE
+        )
+    payload = torch.load(VECTOR_TENSOR_FILE, map_location=device, weights_only=True)
+    raw_vectors = payload.get("vectors", {})
+    return {
+        name: tensor.to(device=device, dtype=dtype)
+        for name, tensor in raw_vectors.items()
+        if isinstance(tensor, torch.Tensor)
+    }
 
+
+def steering_vector(perception: Dict[str, float], device: str, dtype: torch.dtype, threshold: float = 0.04) -> torch.Tensor:
+    weights = slider_weights(perception)
+    vectors = load_vector_tensors(device=device, dtype=dtype)
+    available = list(vectors.values())
+    if not available:
+        raise ValueError("No perception vectors are available in %s." % VECTOR_TENSOR_FILE)
+    combined = torch.zeros_like(available[0], device=device, dtype=dtype)
     for name, weight in weights.items():
         if abs(weight) < threshold:
             continue
-        definition = RUNTIME_PHRASES.get(name) or vectors.get(name, VECTOR_DEFINITIONS.get(name, {}))
-        if not isinstance(definition, dict):
-            definition = RUNTIME_PHRASES.get(name, VECTOR_DEFINITIONS.get(name, {}))
-        pos = str(definition.get("positive", ""))
-        neg = str(definition.get("negative", ""))
-        if weight > 0:
-            positive.append(_weighted_phrase(pos, weight))
-            if neg:
-                negative.append(_weighted_phrase(neg, weight * 0.6))
-        else:
-            positive.append(_weighted_phrase(neg, abs(weight)))
-            if pos:
-                negative.append(_weighted_phrase(pos, abs(weight) * 0.6))
-
-    return positive, negative, weights
-
-
-def _weighted_phrase(phrase: str, weight: float) -> str:
-    strength = max(0.05, min(abs(weight), 1.0))
-    if strength >= 0.75:
-        prefix = "strong"
-    elif strength >= 0.38:
-        prefix = "moderate"
-    else:
-        prefix = "subtle"
-    return "%s %s" % (prefix, phrase)
+        vector = vectors.get(name)
+        if vector is not None:
+            combined = combined + float(weight) * vector
+    return combined

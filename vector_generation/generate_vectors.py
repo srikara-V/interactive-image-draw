@@ -13,7 +13,8 @@ from app.services.generator import _load_pipeline, model_info  # noqa: E402
 from app.services.perception_vectors import VECTOR_DEFINITIONS  # noqa: E402
 
 
-OUTPUT = Path(__file__).resolve().parent / "perception_vectors.json"
+OUTPUT_JSON = Path(__file__).resolve().parent / "perception_vectors.json"
+OUTPUT_PT = Path(__file__).resolve().parent / "perception_vectors.pt"
 
 
 def _mean_prompt_embedding(pipeline, phrase: str) -> torch.Tensor:
@@ -61,10 +62,26 @@ def generate_vectors() -> Dict[str, object]:
     }
 
 
+def _tensor_payload(payload: Dict[str, object]) -> Dict[str, object]:
+    vectors = payload["vectors"]
+    tensor_vectors = {}
+    for name, vector in vectors.items():
+        tensor_vectors[name] = torch.tensor(vector["embedding"], dtype=torch.float32)
+    return {
+        "model_id": payload["model_id"],
+        "device": payload["device"],
+        "dtype": payload["dtype"],
+        "method": payload["method"],
+        "vectors": tensor_vectors,
+    }
+
+
 def main() -> None:
     payload = generate_vectors()
-    OUTPUT.write_text(json.dumps(payload, indent=2) + "\n")
-    print("wrote %s" % OUTPUT)
+    OUTPUT_JSON.write_text(json.dumps(payload, indent=2) + "\n")
+    torch.save(_tensor_payload(payload), OUTPUT_PT)
+    print("wrote %s" % OUTPUT_JSON)
+    print("wrote %s" % OUTPUT_PT)
     for name, vector in payload["vectors"].items():
         print("%s: dim=%s norm=%.4f" % (name, vector["dimension"], vector["norm"]))
 
