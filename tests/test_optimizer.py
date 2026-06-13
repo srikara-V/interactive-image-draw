@@ -3,6 +3,7 @@ from PIL import Image
 
 from app.services.generator import generate_image
 from app.services.optimizer import image_features, optimizer
+from app.services.perception_vectors import slider_weights, weighted_refinement_phrases
 
 
 class FakePipeline:
@@ -59,3 +60,17 @@ def test_metropolis_step_records_history(monkeypatch):
     assert len(chain.history) == 1
     assert 0.0 <= result["acceptance_probability"] <= 1.0
     assert result["proposal"].size == image.size
+
+
+def test_perception_vectors_map_sliders_to_model_directions():
+    positive, negative, weights = weighted_refinement_phrases(
+        {"contrast": 85, "saturation": 25, "warmth": 70, "sharpness": 10}
+    )
+
+    assert slider_weights({"sharpness": 10})["blurry"] > 0
+    assert weights["contrast"] > 0
+    assert weights["saturation"] < 0
+    assert any("high contrast" in phrase for phrase in positive)
+    assert any("muted color" in phrase for phrase in positive)
+    assert any("soft blur" in phrase for phrase in positive)
+    assert negative

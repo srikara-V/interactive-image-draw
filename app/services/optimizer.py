@@ -6,6 +6,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter
 
+from app.services.generator import refine_image
+
 
 FeatureMap = Dict[str, float]
 PerceptionMap = Dict[str, float]
@@ -260,6 +262,65 @@ class MetropolisImageOptimizer:
             "drift": float(selected_score["drift"]),
             "perception_reward": float(selected_score["perception_reward"]),
             "plausibility": float(selected_score["plausibility"]),
+        }
+        chain.history.append(row)
+        chain.history = chain.history[-64:]
+
+        return {
+            "chain": chain,
+            "proposal": proposal,
+            "accepted": accepted,
+            "acceptance_probability": acceptance_probability,
+            "current_score": selected_score,
+            "proposal_score": proposal_score,
+            "history": chain.history,
+        }
+
+    def refine(
+        self,
+        chain_id: str,
+        perception: PerceptionMap,
+        temperature: float,
+        drift_budget: float,
+        step_size: float,
+        style: str = "auto",
+    ) -> Dict[str, object]:
+        chain = self.get_chain(chain_id)
+        targets = perception_to_targets(perception, image_features(chain.base))
+        current_score = score_image(chain.current, chain.base, targets, drift_budget)
+        strength = float(np.clip(0.20 + step_size * 0.20, 0.25, 0.40))
+        proposal = refine_image(
+            image=chain.current,
+            prompt=chain.prompt,
+            perception=perception,
+            seed=chain.seed + chain.iteration * 104729,
+            strength=strength,
+            style=style,
+        )
+        proposal_score = score_image(proposal, chain.base, targets, drift_budget)
+
+        temp = float(np.clip(temperature, 0.04, 2.5))
+        delta = float(proposal_score["energy"] - current_score["energy"])
+        acceptance_probability = float(min(1.0, math.exp(np.clip(delta / temp, -60.0, 0.0))))
+        accepted = bool(chain.rng().random() < acceptance_probability)
+
+        if accepted:
+            chain.current = proposal
+            selected_score = proposal_score
+        else:
+            selected_score = current_score
+
+        chain.iteration += 1
+        row = {
+            "iteration": float(chain.iteration),
+            "accepted": 1.0 if accepted else 0.0,
+            "acceptance_probability": acceptance_probability,
+            "energy": float(selected_score["energy"]),
+            "proposal_energy": float(proposal_score["energy"]),
+            "drift": float(selected_score["drift"]),
+            "perception_reward": float(selected_score["perception_reward"]),
+            "plausibility": float(selected_score["plausibility"]),
+            "mode": 2.0,
         }
         chain.history.append(row)
         chain.history = chain.history[-64:]

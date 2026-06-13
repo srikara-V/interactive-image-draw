@@ -6,6 +6,7 @@ import {
   Loader2,
   Play,
   RefreshCcw,
+  WandSparkles,
   SlidersHorizontal,
   Sparkles,
   Upload
@@ -198,6 +199,28 @@ export function App() {
     }
   }
 
+  async function refine(steps: number) {
+    if (!chain) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const payload = await postJson<ChainPayload>("/api/refine", {
+        chain_id: chain.chain_id,
+        perception,
+        temperature,
+        drift_budget: driftBudget,
+        step_size: stepSize,
+        steps,
+        style
+      });
+      setChain(payload);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Refinement failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function reset() {
     if (!chain) return;
     setBusy(true);
@@ -301,6 +324,10 @@ export function App() {
             <button type="button" onClick={() => step(8)} disabled={!chain || busy}>
               <Activity size={16} />
               Run 8
+            </button>
+            <button type="button" onClick={() => refine(1)} disabled={!chain || busy}>
+              <WandSparkles size={16} />
+              Refine
             </button>
             <button type="button" onClick={reset} disabled={!chain || busy}>
               <RefreshCcw size={16} />

@@ -24,6 +24,7 @@ class StepRequest(BaseModel):
     drift_budget: float = 0.22
     step_size: float = 0.42
     steps: int = 1
+    style: str = "auto"
 
 
 class ResetRequest(BaseModel):
@@ -119,6 +120,35 @@ def optimize_step(request: StepRequest) -> Dict[str, object]:
             )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Unknown chain_id") from exc
+
+    assert last_result is not None
+    return _chain_payload(
+        last_result["chain"],
+        proposal=last_result["proposal"],
+        accepted=last_result["accepted"],
+        acceptance_probability=last_result["acceptance_probability"],
+        metrics=last_result["current_score"],
+    )
+
+
+@app.post("/api/refine")
+def refine_step(request: StepRequest) -> Dict[str, object]:
+    try:
+        last_result = None
+        total_steps = max(1, min(int(request.steps), 4))
+        for _ in range(total_steps):
+            last_result = optimizer.refine(
+                chain_id=request.chain_id,
+                perception=request.perception,
+                temperature=request.temperature,
+                drift_budget=request.drift_budget,
+                step_size=request.step_size,
+                style=request.style,
+            )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Unknown chain_id") from exc
+    except ModelLoadError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     assert last_result is not None
     return _chain_payload(

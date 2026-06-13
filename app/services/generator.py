@@ -6,6 +6,8 @@ from typing import Dict, List, Optional
 import torch
 from PIL import Image
 
+from app.services.perception_vectors import weighted_refinement_phrases
+
 
 DEFAULT_MODEL_ID = "stabilityai/sd-turbo"
 DEFAULT_NEGATIVE_PROMPT = (
@@ -109,6 +111,38 @@ def _load_pipeline():
     return pipeline
 
 
+@lru_cache(maxsize=1)
+def _load_img2img_pipeline():
+    settings = _settings()
+    try:
+        from diffusers import AutoPipelineForImage2Image
+    except ImportError as exc:
+        raise ModelLoadError(
+            "Diffusers is not installed. Run `pip install -r requirements.txt` in the virtual environment."
+        ) from exc
+
+    try:
+        pipeline = AutoPipelineForImage2Image.from_pipe(_load_pipeline())
+    except Exception:
+        try:
+            kwargs = {
+                "torch_dtype": settings.dtype,
+                "use_safetensors": True,
+            }
+            if settings.dtype is torch.float16:
+                kwargs["variant"] = "fp16"
+            pipeline = AutoPipelineForImage2Image.from_pretrained(settings.model_id, **kwargs)
+        except Exception as exc:
+            raise ModelLoadError(
+                "Could not load Hugging Face img2img pipeline for `%s`." % settings.model_id
+            ) from exc
+
+    pipeline = pipeline.to(settings.device)
+    if hasattr(pipeline, "enable_attention_slicing"):
+        pipeline.enable_attention_slicing()
+    return pipeline
+
+
 def _generator_for_seed(seed: int, device: str) -> torch.Generator:
     generator_device = device if device == "cuda" else "cpu"
     return torch.Generator(device=generator_device).manual_seed(int(seed))
@@ -134,6 +168,26 @@ def _guidance_scale() -> float:
     return 7.0
 
 
+def _img2img_guidance_scale() -> float:
+    raw = os.getenv("IMAGE_REFINE_GUIDANCE_SCALE", "").strip()
+    if raw:
+        return max(0.0, min(float(raw), 20.0))
+    model_id = _settings().model_id.lower()
+    if "turbo" in model_id or "lightning" in model_id:
+        return 1.2
+    return 7.5
+
+
+def _img2img_steps() -> int:
+    raw = os.getenv("IMAGE_REFINE_STEPS", "").strip()
+    if raw:
+        return max(1, min(int(raw), 80))
+    model_id = _settings().model_id.lower()
+    if "turbo" in model_id or "lightning" in model_id:
+        return 8
+    return 22
+
+
 def generate_image(prompt: str, seed: int = 7, width: int = 768, height: int = 768, style: str = "auto") -> Image.Image:
     settings = _settings()
     pipeline = _load_pipeline()
@@ -156,6 +210,47 @@ def generate_image(prompt: str, seed: int = 7, width: int = 768, height: int = 7
     if image is None:
         raise ModelLoadError("The diffusion pipeline did not return an image.")
     return image.convert("RGB")
+
+
+def refine_image(
+    image: Image.Image,
+    prompt: str,
+    perception: Dict[str, float],
+    seed: int,
+    strength: float,
+    style: str = "auto",
+) -> Image.Image:
+    settings = _settings()
+    pipeline = _load_img2img_pipeline()
+    positive_phrases, negative_phrases, _weights = weighted_refinement_phrases(perception)
+    base_prompt = _style_prompt(prompt, style)
+    if positive_phrases:
+        refine_prompt = "%s, preserve the same subject and composition, %s" % (
+            base_prompt,
+            ", ".join(positive_phrases),
+        )
+    else:
+        refine_prompt = "%s, preserve the same subject and composition, refined realistic detail" % base_prompt
+
+    negative_prompt = DEFAULT_NEGATIVE_PROMPT
+    if negative_phrases:
+        negative_prompt = "%s, %s" % (negative_prompt, ", ".join(negative_phrases))
+
+    size = image.size
+    init_image = image.convert("RGB")
+    result = pipeline(
+        prompt=refine_prompt,
+        negative_prompt=negative_prompt,
+        image=init_image,
+        strength=float(max(0.25, min(strength, 0.55))),
+        num_inference_steps=_img2img_steps(),
+        guidance_scale=_img2img_guidance_scale(),
+        generator=_generator_for_seed(seed, settings.device),
+    )
+    refined: Optional[Image.Image] = result.images[0] if result.images else None
+    if refined is None:
+        raise ModelLoadError("The diffusion img2img pipeline did not return an image.")
+    return refined.convert("RGB").resize(size, Image.Resampling.LANCZOS)
 
 
 def model_info() -> Dict[str, str]:
