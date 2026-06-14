@@ -3,18 +3,35 @@ import sys
 from pathlib import Path
 from typing import Dict
 
+import numpy as np
 import torch
+from PIL import Image, ImageEnhance, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services.generator import _encode_image_latents, _load_pipeline, _settings, model_info  # noqa: E402
+from app.services.generator import (  # noqa: E402
+    DEFAULT_NEGATIVE_PROMPT,
+    _ddim_invert,
+    _encode_image_latents,
+    _encode_prompt_embeddings,
+    _load_pipeline,
+    _settings,
+    generate_image,
+    model_info,
+)
 from app.services.perception_vectors import VECTOR_DEFINITIONS  # noqa: E402
 
 
 OUTPUT_JSON = Path(__file__).resolve().parent / "perception_vectors.json"
 OUTPUT_PT = Path(__file__).resolve().parent / "perception_vectors.pt"
+
+VECTOR_BASE_PROMPTS = [
+    "premium product photo of a translucent wearable device on a workbench",
+    "editorial product photograph of a compact camera module on a desk",
+    "cinematic close-up of a small metal gadget on a studio table",
+]
 
 
 def _mean_prompt_embedding(pipeline, phrase: str) -> torch.Tensor:
@@ -37,27 +54,83 @@ def _mean_prompt_embedding(pipeline, phrase: str) -> torch.Tensor:
     return pooled[0].detach().float().cpu()
 
 
-def _generate_latents(pipeline, phrase: str, seed: int) -> torch.Tensor:
+def _warmth(image: Image.Image, amount: float) -> Image.Image:
+    tensor = torch.from_numpy(np.asarray(image.convert("RGB"), dtype=np.float32))
+    if amount >= 0:
+        tensor[..., 0] *= 1.0 + amount * 0.22
+        tensor[..., 1] *= 1.0 + amount * 0.05
+        tensor[..., 2] *= 1.0 - amount * 0.16
+    else:
+        tensor[..., 0] *= 1.0 + amount * 0.14
+        tensor[..., 1] *= 1.0 + amount * 0.03
+        tensor[..., 2] *= 1.0 - amount * 0.24
+    array = tensor.clamp(0, 255).byte().numpy()
+    return Image.fromarray(array, mode="RGB")
+
+
+def _edit_pair(name: str, image: Image.Image) -> tuple[Image.Image, Image.Image]:
+    if name == "blurry":
+        return image.filter(ImageFilter.GaussianBlur(radius=3.0)), image.filter(ImageFilter.UnsharpMask(radius=1.0, percent=180, threshold=2))
+    if name == "contrast":
+        return ImageEnhance.Contrast(image).enhance(1.85), ImageEnhance.Contrast(image).enhance(0.45)
+    if name == "saturation":
+        return ImageEnhance.Color(image).enhance(1.9), ImageEnhance.Color(image).enhance(0.15)
+    if name == "warmth":
+        return _warmth(image, 1.0), _warmth(image, -1.0)
+    if name == "sharpness":
+        sharp = image.filter(ImageFilter.UnsharpMask(radius=1.1, percent=230, threshold=1))
+        soft = image.filter(ImageFilter.GaussianBlur(radius=1.6))
+        return sharp, soft
+    raise KeyError(name)
+
+
+def _inverted_latent(pipeline, image: Image.Image, prompt: str) -> torch.Tensor:
     settings = _settings()
-    generator_device = settings.device if settings.device == "cuda" else "cpu"
-    generator = torch.Generator(device=generator_device).manual_seed(seed)
-    result = pipeline(
-        prompt=phrase,
-        negative_prompt="low quality, distorted, text, watermark",
-        width=512,
-        height=512,
-        num_inference_steps=4,
-        guidance_scale=0.0,
-        generator=generator,
+    guidance_scale = 1.2
+    prompt_embeds, negative_prompt_embeds = _encode_prompt_embeddings(
+        pipeline=pipeline,
+        prompt=prompt,
+        negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+        guidance_scale=guidance_scale,
+        settings=settings,
     )
-    image = result.images[0].convert("RGB")
-    return _encode_image_latents(pipeline, image, settings)[0].detach().float().cpu()
+    latents = _encode_image_latents(pipeline, image, settings)
+    inverted = _ddim_invert(
+        pipeline=pipeline,
+        latents=latents,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+        guidance_scale=guidance_scale,
+        steps=8,
+    )
+    return inverted[0].detach().float().cpu()
 
 
-def generate_vectors() -> Dict[str, object]:
+def _paired_edit_latent_vectors(pipeline) -> Dict[str, torch.Tensor]:
+    accumulators = {name: [] for name in VECTOR_DEFINITIONS}
+    for index, prompt in enumerate(VECTOR_BASE_PROMPTS):
+        base = generate_image(prompt, seed=3100 + index, width=512, height=512, style="product")
+        for name in VECTOR_DEFINITIONS:
+            positive, negative = _edit_pair(name, base)
+            positive_latent = _inverted_latent(pipeline, positive, prompt)
+            negative_latent = _inverted_latent(pipeline, negative, prompt)
+            direction = positive_latent - negative_latent
+            if name == "sharpness":
+                direction = -direction
+            accumulators[name].append(direction)
+
+    latent_vectors = {}
+    for name, directions in accumulators.items():
+        direction = torch.stack(directions, dim=0).mean(dim=0)
+        direction = direction - direction.mean()
+        norm = float(torch.linalg.vector_norm(direction).item())
+        latent_vectors[name] = direction / max(norm, 1e-8)
+    return latent_vectors
+
+
+def generate_vectors(latent_tensors: Dict[str, torch.Tensor]) -> Dict[str, object]:
     pipeline = _load_pipeline()
     vectors = {}
-    latent_vectors = {}
     for name, definition in VECTOR_DEFINITIONS.items():
         positive = definition["positive"]
         negative = definition["negative"]
@@ -73,37 +146,28 @@ def generate_vectors() -> Dict[str, object]:
             "dimension": int(unit.numel()),
             "embedding": [round(float(value), 7) for value in unit.tolist()],
         }
-        pos_latent = _generate_latents(pipeline, positive, seed=1701)
-        neg_latent = _generate_latents(pipeline, negative, seed=1701)
-        latent_direction = pos_latent - neg_latent
-        latent_norm = float(torch.linalg.vector_norm(latent_direction).item())
-        latent_unit = latent_direction / max(latent_norm, 1e-8)
-        latent_vectors[name] = {
-            "shape": list(latent_unit.shape),
-            "norm": latent_norm,
-            "mean": float(latent_unit.mean().item()),
-            "std": float(latent_unit.std().item()),
+    latent_vectors = {
+        name: {
+            "shape": list(vector.shape),
+            "norm": 1.0,
+            "mean": float(vector.mean().item()),
+            "std": float(vector.std().item()),
         }
+        for name, vector in latent_tensors.items()
+    }
     return {
         **model_info(),
-        "method": "ddim_latent_delta_with_text_embedding_audit",
+        "method": "paired_edit_ddim_inversion_latent_delta",
         "vectors": vectors,
         "latent_vectors": latent_vectors,
     }
 
 
-def _tensor_payload(payload: Dict[str, object]) -> Dict[str, object]:
+def _tensor_payload(payload: Dict[str, object], latent_tensors: Dict[str, torch.Tensor]) -> Dict[str, object]:
     vectors = payload["vectors"]
     tensor_vectors = {}
     for name, vector in vectors.items():
         tensor_vectors[name] = torch.tensor(vector["embedding"], dtype=torch.float32)
-    latent_tensors = {}
-    pipeline = _load_pipeline()
-    for name, definition in VECTOR_DEFINITIONS.items():
-        pos_latent = _generate_latents(pipeline, definition["positive"], seed=1701)
-        neg_latent = _generate_latents(pipeline, definition["negative"], seed=1701)
-        direction = pos_latent - neg_latent
-        latent_tensors[name] = direction / max(float(torch.linalg.vector_norm(direction).item()), 1e-8)
     return {
         "model_id": payload["model_id"],
         "device": payload["device"],
@@ -115,9 +179,11 @@ def _tensor_payload(payload: Dict[str, object]) -> Dict[str, object]:
 
 
 def main() -> None:
-    payload = generate_vectors()
+    pipeline = _load_pipeline()
+    latent_tensors = _paired_edit_latent_vectors(pipeline)
+    payload = generate_vectors(latent_tensors)
     OUTPUT_JSON.write_text(json.dumps(payload, indent=2) + "\n")
-    torch.save(_tensor_payload(payload), OUTPUT_PT)
+    torch.save(_tensor_payload(payload, latent_tensors), OUTPUT_PT)
     print("wrote %s" % OUTPUT_JSON)
     print("wrote %s" % OUTPUT_PT)
     for name, vector in payload["vectors"].items():

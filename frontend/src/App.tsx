@@ -350,7 +350,7 @@ export function App() {
 
           <div className="image-grid">
             <ImagePane title="Current state" src={chain?.current} badge={chain ? `iter ${chain.iteration}` : undefined} />
-            <ImagePane title="Last proposal" src={chain?.proposal || chain?.base} badge={chain?.accepted === undefined ? "base" : lastAccepted} />
+            <ImagePane title="Base state" src={chain?.base} badge="base" />
           </div>
 
           <section className="metrics-band">

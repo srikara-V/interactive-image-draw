@@ -314,6 +314,46 @@ def _ddim_sample(
     return sampled
 
 
+def _latent_feature_gradient(pipeline, latents: torch.Tensor, perception: Dict[str, float]) -> torch.Tensor:
+    def slider(key: str) -> float:
+        return max(-1.0, min((float(perception.get(key, 50.0)) - 50.0) / 50.0, 1.0))
+
+    contrast_weight = slider("contrast")
+    saturation_weight = slider("saturation")
+    warmth_weight = slider("warmth")
+    sharpness_weight = slider("sharpness") - slider("blurry")
+    if max(abs(contrast_weight), abs(saturation_weight), abs(warmth_weight), abs(sharpness_weight)) < 0.04:
+        return torch.zeros_like(latents)
+
+    working = latents.detach().clone().requires_grad_(True)
+    decoded = pipeline.vae.decode(working / pipeline.vae.config.scaling_factor, return_dict=False)[0]
+    image = (decoded / 2 + 0.5).clamp(0, 1)
+    red, green, blue = image[:, 0], image[:, 1], image[:, 2]
+    lum = red * 0.2126 + green * 0.7152 + blue * 0.0722
+
+    contrast = lum.std()
+    max_channel = image.max(dim=1).values
+    min_channel = image.min(dim=1).values
+    saturation = ((max_channel - min_channel) / max_channel.clamp(min=1e-4)).mean()
+    warmth = (red.mean() - blue.mean()) * 0.9
+    grad_x = (lum[:, :, 1:] - lum[:, :, :-1]).abs().mean()
+    grad_y = (lum[:, 1:, :] - lum[:, :-1, :]).abs().mean()
+    sharpness = grad_x + grad_y
+
+    objective = (
+        contrast_weight * contrast
+        + saturation_weight * saturation
+        + warmth_weight * warmth
+        + sharpness_weight * sharpness
+    )
+    objective.backward()
+    gradient = working.grad.detach()
+    norm = torch.linalg.vector_norm(gradient)
+    if not torch.isfinite(norm) or float(norm.item()) < 1e-8:
+        return torch.zeros_like(latents)
+    return gradient / norm
+
+
 def generate_image(prompt: str, seed: int = 7, width: int = 768, height: int = 768, style: str = "auto") -> Image.Image:
     settings = _settings()
     pipeline = _load_pipeline()
@@ -375,8 +415,14 @@ def refine_image(
         dtype=inverted.dtype,
         latent_shape=inverted.shape,
     )
+    gradient_direction = _latent_feature_gradient(pipeline, base_latents, perception).to(
+        device=settings.device,
+        dtype=inverted.dtype,
+    )
     scale = float(os.getenv("IMAGE_LATENT_STEERING_SCALE", "5.5"))
-    proposal_latents = inverted + direction * scale * float(max(0.05, min(strength, 0.75)))
+    gradient_scale = float(os.getenv("IMAGE_GRADIENT_STEERING_SCALE", "8.0"))
+    proposal_direction = direction * scale + gradient_direction * gradient_scale
+    proposal_latents = inverted + proposal_direction * float(max(0.05, min(strength, 0.75)))
     sampled = _ddim_sample(
         pipeline=pipeline,
         latents=proposal_latents,
