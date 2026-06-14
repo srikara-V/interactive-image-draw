@@ -33,15 +33,18 @@ export function App() {
   const historyRef = useRef<ImageData[]>([]);
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
   const generateTimerRef = useRef<number | null>(null);
+  const generationInFlightRef = useRef(false);
+  const pendingGenerateRef = useRef(false);
   const [prompt, setPrompt] = useState("");
   const [stroke, setStroke] = useState(10);
   const [liveAfterStroke, setLiveAfterStroke] = useState(true);
   const [isDrawing, setIsDrawing] = useState(false);
   const [isWarmed, setIsWarmed] = useState(false);
-  const [isBusy, setIsBusy] = useState(false);
+  const [isPowerBusy, setIsPowerBusy] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [status, setStatus] = useState("Idle");
   const [output, setOutput] = useState<string | null>(null);
-  const canvasLocked = !isWarmed || isBusy;
+  const canvasLocked = !isWarmed || isPowerBusy;
 
   useEffect(() => {
     resetCanvas();
@@ -101,8 +104,8 @@ export function App() {
   }
 
   async function warmOrCool() {
-    if (isBusy) return;
-    setIsBusy(true);
+    if (isPowerBusy || isGenerating) return;
+    setIsPowerBusy(true);
     try {
       if (!isWarmed) {
         setStatus("Warming Modal GPU container");
@@ -118,7 +121,7 @@ export function App() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Request failed");
     } finally {
-      setIsBusy(false);
+      setIsPowerBusy(false);
     }
   }
 
@@ -131,8 +134,13 @@ export function App() {
 
   async function generate() {
     const canvas = canvasRef.current;
-    if (!canvas || !isWarmed || isBusy) return;
-    setIsBusy(true);
+    if (!canvas || !isWarmed || isPowerBusy) return;
+    if (generationInFlightRef.current) {
+      pendingGenerateRef.current = true;
+      return;
+    }
+    generationInFlightRef.current = true;
+    setIsGenerating(true);
     setStatus("Running diffusion inference");
     try {
       const result = await postJSON<GenerateResponse>("/generate", {
@@ -144,7 +152,12 @@ export function App() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Generation failed");
     } finally {
-      setIsBusy(false);
+      generationInFlightRef.current = false;
+      setIsGenerating(false);
+      if (pendingGenerateRef.current && isWarmed) {
+        pendingGenerateRef.current = false;
+        scheduleGenerate();
+      }
     }
   }
 
@@ -174,23 +187,23 @@ export function App() {
             placeholder={DEFAULT_PROMPT}
             aria-label="Prompt"
           />
-          <button className="icon-button generate-button" onClick={() => void generate()} disabled={!isWarmed || isBusy} aria-label="Generate">
-            {isBusy ? <Loader2 className="spin" size={20} /> : <ArrowRight size={21} />}
+          <button className="icon-button generate-button" onClick={() => void generate()} disabled={!isWarmed || isPowerBusy || isGenerating} aria-label="Generate">
+            {isGenerating ? <Loader2 className="spin" size={20} /> : <ArrowRight size={21} />}
           </button>
         </div>
 
         <div className="actions">
-          <button className="icon-button" onClick={clear} disabled={isBusy} aria-label="Clear">
+          <button className="icon-button" onClick={clear} disabled={isPowerBusy || isGenerating} aria-label="Clear">
             <Trash2 size={17} />
           </button>
           <button
             className={`icon-button power-button ${isWarmed ? "on" : ""}`}
             onClick={warmOrCool}
-            disabled={isBusy}
+            disabled={isPowerBusy || isGenerating}
             aria-label={isWarmed ? "Cool down" : "Warm up"}
             title={isWarmed ? "Cool down" : "Warm up"}
           >
-            {isBusy ? <Loader2 className="spin" size={20} /> : <Power size={20} />}
+            {isPowerBusy ? <Loader2 className="spin" size={20} /> : <Power size={20} />}
           </button>
         </div>
       </header>
