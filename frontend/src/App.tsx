@@ -356,6 +356,7 @@ export function App() {
           <section className="metrics-band">
             <MetricPill label="Acceptance" value={chain?.acceptance_probability} />
             <MetricPill label="Energy" value={chain?.metrics.energy} />
+            <MetricPill label="CLIP Align" value={chain?.metrics.embedding_alignment} />
             <MetricPill label="Reward" value={chain?.metrics.perception_reward} />
             <MetricPill label="Prior" value={chain?.metrics.plausibility} />
             <MetricPill label="Drift" value={chain?.metrics.drift} />

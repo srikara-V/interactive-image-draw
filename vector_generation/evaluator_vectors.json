@@ -1,0 +1,37 @@
+{
+  "method": "clip_image_mean_positive_minus_negative",
+  "clip_model": "openai/clip-vit-base-patch32",
+  "diffusion_model": "stabilityai/sd-turbo",
+  "vectors": {
+    "blurry": {
+      "positive_examples": 4,
+      "negative_examples": 4,
+      "dimension": 512,
+      "margin": 0.5356700420379639
+    },
+    "contrast": {
+      "positive_examples": 4,
+      "negative_examples": 4,
+      "dimension": 512,
+      "margin": 0.37269268929958344
+    },
+    "saturation": {
+      "positive_examples": 4,
+      "negative_examples": 4,
+      "dimension": 512,
+      "margin": 0.22635462880134583
+    },
+    "warmth": {
+      "positive_examples": 4,
+      "negative_examples": 4,
+      "dimension": 512,
+      "margin": 0.2004135176539421
+    },
+    "sharpness": {
+      "positive_examples": 4,
+      "negative_examples": 4,
+      "dimension": 512,
+      "margin": 0.43168801069259644
+    }
+  }
+}

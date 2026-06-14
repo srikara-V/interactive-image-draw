@@ -16,3 +16,19 @@ Run:
 source ../.venv/bin/activate
 python generate_vectors.py
 ```
+
+The MH acceptance energy uses a second set of image-space evaluator vectors that follow the reference project pattern:
+
+```text
+direction = mean(CLIP(positive_images)) - mean(CLIP(negative_images))
+energy = CLIP(candidate_image) · direction
+```
+
+Generate them with:
+
+```bash
+source ../.venv/bin/activate
+python generate_evaluator_vectors.py
+```
+
+This writes `evaluator_vectors.pt` for runtime scoring, `evaluator_vectors.json` for audit, and `evaluator_examples/` so the positive/negative examples can be inspected.

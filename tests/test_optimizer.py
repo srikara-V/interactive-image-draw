@@ -37,6 +37,7 @@ def test_generated_image_has_expected_features(monkeypatch):
 
 
 def test_metropolis_step_records_history(monkeypatch):
+    monkeypatch.setenv("IMAGE_EVALUATOR", "features")
     monkeypatch.setattr(generator, "_load_pipeline", lambda: FakePipeline())
     image = generate_image("editorial portrait with dramatic contrast", seed=3, width=512, height=512)
     chain = optimizer.create_chain("editorial portrait with dramatic contrast", image, seed=3)

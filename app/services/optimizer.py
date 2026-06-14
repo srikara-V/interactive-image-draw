@@ -1,4 +1,5 @@
 import math
+import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
@@ -6,6 +7,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter
 
+from app.services.evaluator_vectors import evaluator_available, evaluator_energy
 from app.services.generator import refine_image
 
 
@@ -131,6 +133,31 @@ def score_image(image: Image.Image, base: Image.Image, targets: FeatureMap, drif
     return result
 
 
+def score_image_with_perception(
+    image: Image.Image,
+    base: Image.Image,
+    perception: PerceptionMap,
+    targets: FeatureMap,
+    drift_budget: float,
+) -> Dict[str, float]:
+    result = score_image(image=image, base=base, targets=targets, drift_budget=drift_budget)
+    if evaluator_available():
+        embedding = evaluator_energy(image, perception)
+        result.update(embedding)
+        result["energy"] = float(
+            embedding["embedding_energy"]
+            + result["perception_reward"] * 0.35
+            + result["plausibility"] * 0.55
+        )
+        result["energy_source"] = 1.0
+    else:
+        result["embedding_energy"] = 0.0
+        result["embedding_alignment"] = 0.0
+        result["embedding_active_vectors"] = 0.0
+        result["energy_source"] = 0.0
+    return result
+
+
 def _random_mask(size: Tuple[int, int], rng: np.random.Generator) -> Image.Image:
     width, height = size
     y = np.linspace(-1.0, 1.0, height, dtype=np.float32)
@@ -213,7 +240,7 @@ class ChainState:
 
     def current_metrics(self, perception: PerceptionMap, drift_budget: float) -> Dict[str, float]:
         targets = perception_to_targets(perception, image_features(self.base))
-        return score_image(self.current, self.base, targets, drift_budget)
+        return score_image_with_perception(self.current, self.base, perception, targets, drift_budget)
 
 
 class MetropolisImageOptimizer:
@@ -241,9 +268,9 @@ class MetropolisImageOptimizer:
         chain = self.get_chain(chain_id)
         rng = chain.rng()
         targets = perception_to_targets(perception, image_features(chain.base))
-        current_score = score_image(chain.current, chain.base, targets, drift_budget)
+        current_score = score_image_with_perception(chain.current, chain.base, perception, targets, drift_budget)
         proposal = propose_image(chain.current, perception, rng, step_size)
-        proposal_score = score_image(proposal, chain.base, targets, drift_budget)
+        proposal_score = score_image_with_perception(proposal, chain.base, perception, targets, drift_budget)
 
         temp = float(np.clip(temperature, 0.04, 2.5))
         delta = float(proposal_score["energy"] - current_score["energy"])
@@ -291,17 +318,26 @@ class MetropolisImageOptimizer:
     ) -> Dict[str, object]:
         chain = self.get_chain(chain_id)
         targets = perception_to_targets(perception, image_features(chain.base))
-        current_score = score_image(chain.current, chain.base, targets, drift_budget)
+        current_score = score_image_with_perception(chain.current, chain.base, perception, targets, drift_budget)
         strength = float(np.clip(0.20 + step_size * 0.20, 0.25, 0.40))
-        proposal = refine_image(
-            image=chain.current,
-            prompt=chain.prompt,
-            perception=perception,
-            seed=chain.seed + chain.iteration * 104729,
-            strength=strength,
-            style=style,
-        )
-        proposal_score = score_image(proposal, chain.base, targets, drift_budget)
+        candidate_count = max(1, min(int(os.getenv("IMAGE_REFINE_CANDIDATES", "3")), 8))
+        proposal = None
+        proposal_score = None
+        for candidate_index in range(candidate_count):
+            candidate = refine_image(
+                image=chain.current,
+                prompt=chain.prompt,
+                perception=perception,
+                seed=chain.seed + chain.iteration * 104729 + candidate_index * 8191,
+                strength=strength,
+                style=style,
+            )
+            candidate_score = score_image_with_perception(candidate, chain.base, perception, targets, drift_budget)
+            if proposal_score is None or candidate_score["energy"] > proposal_score["energy"]:
+                proposal = candidate
+                proposal_score = candidate_score
+        assert proposal is not None
+        assert proposal_score is not None
 
         temp = float(np.clip(temperature, 0.04, 2.5))
         delta = float(proposal_score["energy"] - current_score["energy"])

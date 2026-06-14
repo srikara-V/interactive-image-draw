@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 from diffusers import DDIMInverseScheduler, DDIMScheduler
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 
 from app.services.perception_vectors import steering_vector
 
@@ -354,6 +354,46 @@ def _latent_feature_gradient(pipeline, latents: torch.Tensor, perception: Dict[s
     return gradient / norm
 
 
+def _apply_warmth_image(image: Image.Image, amount: float) -> Image.Image:
+    array = np.asarray(image.convert("RGB"), dtype=np.float32)
+    array[..., 0] *= 1.0 + amount * 0.22
+    array[..., 1] *= 1.0 + amount * 0.04
+    array[..., 2] *= 1.0 - amount * 0.16
+    return Image.fromarray(np.clip(array, 0, 255).astype("uint8"), mode="RGB")
+
+
+def _perception_target_image(image: Image.Image, perception: Dict[str, float]) -> Image.Image:
+    def slider(key: str) -> float:
+        return max(-1.0, min((float(perception.get(key, 50.0)) - 50.0) / 50.0, 1.0))
+
+    target = image.convert("RGB")
+    blurry = slider("blurry")
+    sharpness = slider("sharpness")
+    contrast = slider("contrast")
+    saturation = slider("saturation")
+    warmth = slider("warmth")
+
+    blur_amount = max(0.0, blurry, -sharpness)
+    sharp_amount = max(0.0, sharpness, -blurry)
+    if blur_amount > 0.04:
+        target = target.filter(ImageFilter.GaussianBlur(radius=1.0 + blur_amount * 6.0))
+    if sharp_amount > 0.04:
+        target = target.filter(
+            ImageFilter.UnsharpMask(
+                radius=0.8 + sharp_amount * 0.8,
+                percent=int(120 + sharp_amount * 220),
+                threshold=1,
+            )
+        )
+    if abs(contrast) > 0.04:
+        target = ImageEnhance.Contrast(target).enhance(1.0 + contrast * 0.75)
+    if abs(saturation) > 0.04:
+        target = ImageEnhance.Color(target).enhance(max(0.05, 1.0 + saturation * 0.95))
+    if abs(warmth) > 0.04:
+        target = _apply_warmth_image(target, warmth)
+    return target
+
+
 def generate_image(prompt: str, seed: int = 7, width: int = 768, height: int = 768, style: str = "auto") -> Image.Image:
     settings = _settings()
     pipeline = _load_pipeline()
@@ -409,6 +449,17 @@ def refine_image(
         guidance_scale=guidance_scale,
         steps=steps,
     )
+    target_image = _perception_target_image(image, perception)
+    target_latents = _encode_image_latents(pipeline, target_image, settings)
+    target_inverted = _ddim_invert(
+        pipeline=pipeline,
+        latents=target_latents,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+        guidance_scale=guidance_scale,
+        steps=steps,
+    )
+    target_direction = target_inverted - inverted
     direction = steering_vector(
         perception,
         device=settings.device,
@@ -421,8 +472,15 @@ def refine_image(
     )
     scale = float(os.getenv("IMAGE_LATENT_STEERING_SCALE", "5.5"))
     gradient_scale = float(os.getenv("IMAGE_GRADIENT_STEERING_SCALE", "8.0"))
-    proposal_direction = direction * scale + gradient_direction * gradient_scale
-    proposal_latents = inverted + proposal_direction * float(max(0.05, min(strength, 0.75)))
+    target_scale = float(os.getenv("IMAGE_TARGET_LATENT_STEERING_SCALE", "0.85"))
+    proposal_direction = direction * scale + gradient_direction * gradient_scale + target_direction * target_scale
+    noise_scale = float(os.getenv("IMAGE_REFINE_NOISE_SCALE", "0.11"))
+    noise = torch.randn(
+        inverted.detach().cpu().shape,
+        generator=_generator_for_seed(seed, "cpu"),
+        dtype=torch.float32,
+    ).to(device=settings.device, dtype=inverted.dtype)
+    proposal_latents = inverted + proposal_direction * float(max(0.05, min(strength, 0.75))) + noise * noise_scale
     sampled = _ddim_sample(
         pipeline=pipeline,
         latents=proposal_latents,

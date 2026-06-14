@@ -19,3 +19,4 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 
 *.log
+vector_generation/evaluator_examples/
