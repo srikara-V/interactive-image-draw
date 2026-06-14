@@ -29,21 +29,20 @@ def evaluator_available() -> bool:
 
 
 def _slider_weights(perception: PerceptionMap) -> Dict[str, float]:
-    def direction(key: str) -> float:
-        return float(np.clip((float(perception.get(key, 50.0)) - 50.0) / 50.0, -1.0, 1.0))
+    def weight(key: str) -> float:
+        return float(np.clip(float(perception.get(key, 0.0)) / 100.0, 0.0, 1.0))
 
     weights = {
-        "blurry": direction("blurry"),
-        "contrast": direction("contrast"),
-        "saturation": direction("saturation"),
-        "warmth": direction("warmth"),
-        "sharpness": direction("sharpness"),
+        "blurry": weight("blurry"),
+        "contrast": weight("contrast"),
+        "saturation": weight("saturation"),
+        "warmth": weight("warmth"),
+        "sharpness": weight("sharpness"),
     }
-    if weights["sharpness"] < 0:
-        weights["blurry"] = max(weights["blurry"], -weights["sharpness"])
+
+    if weights["blurry"] >= weights["sharpness"]:
         weights["sharpness"] = 0.0
-    if weights["blurry"] < 0:
-        weights["sharpness"] = max(weights["sharpness"], -weights["blurry"])
+    else:
         weights["blurry"] = 0.0
     return weights
 

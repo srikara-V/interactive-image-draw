@@ -66,11 +66,11 @@ def test_metropolis_step_records_history(monkeypatch):
 def test_perception_vectors_map_sliders_to_model_directions():
     weights = slider_weights({"blurry": 80, "contrast": 85, "saturation": 25, "warmth": 70, "sharpness": 10})
 
-    assert slider_weights({"sharpness": 10})["blurry"] > 0
-    assert slider_weights({"blurry": 10})["sharpness"] > 0
+    assert slider_weights({"sharpness": 10})["sharpness"] > 0
+    assert slider_weights({"blurry": 10})["blurry"] > 0
     assert weights["blurry"] > 0
     assert weights["contrast"] > 0
-    assert weights["saturation"] < 0
+    assert weights["saturation"] > 0
     assert weights["warmth"] > 0
     assert weights["sharpness"] == 0.0
     assert weights["blurry"] > 0.0
@@ -86,8 +86,10 @@ def test_blurry_slider_targets_lower_sharpness():
         "focus": 0.5,
         "entropy": 0.5,
     }
-    blurry = perception_to_targets({"blurry": 100, "sharpness": 50}, base_features)
+    blurry = perception_to_targets({"blurry": 100, "sharpness": 76}, base_features)
     crisp = perception_to_targets({"blurry": 0, "sharpness": 50}, base_features)
+    neutral = perception_to_targets({"blurry": 0, "sharpness": 0}, base_features)
 
     assert blurry["sharpness"] < base_features["sharpness"]
     assert crisp["sharpness"] > base_features["sharpness"]
+    assert neutral["sharpness"] == base_features["sharpness"]

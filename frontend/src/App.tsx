@@ -49,11 +49,11 @@ const featureLabels: Array<{ key: FeatureKey; label: string }> = [
 ];
 
 const initialPerception: Record<VectorKey, number> = {
-  blurry: 50,
-  contrast: 72,
-  saturation: 62,
-  warmth: 58,
-  sharpness: 76
+  blurry: 0,
+  contrast: 0,
+  saturation: 0,
+  warmth: 0,
+  sharpness: 0
 };
 
 const styles = ["auto", "abstract", "cinematic", "concept", "editorial", "product"];

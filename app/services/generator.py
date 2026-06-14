@@ -315,13 +315,18 @@ def _ddim_sample(
 
 
 def _latent_feature_gradient(pipeline, latents: torch.Tensor, perception: Dict[str, float]) -> torch.Tensor:
-    def slider(key: str) -> float:
-        return max(-1.0, min((float(perception.get(key, 50.0)) - 50.0) / 50.0, 1.0))
+    def weight(key: str) -> float:
+        return max(0.0, min(float(perception.get(key, 0.0)) / 100.0, 1.0))
 
-    contrast_weight = slider("contrast")
-    saturation_weight = slider("saturation")
-    warmth_weight = slider("warmth")
-    sharpness_weight = slider("sharpness") - slider("blurry")
+    contrast_weight = weight("contrast")
+    saturation_weight = weight("saturation")
+    warmth_weight = weight("warmth")
+    blurry_weight = weight("blurry")
+    sharpness_weight = weight("sharpness")
+    if blurry_weight >= sharpness_weight:
+        sharpness_weight = -blurry_weight
+    else:
+        sharpness_weight = sharpness_weight
     if max(abs(contrast_weight), abs(saturation_weight), abs(warmth_weight), abs(sharpness_weight)) < 0.04:
         return torch.zeros_like(latents)
 
@@ -363,20 +368,20 @@ def _apply_warmth_image(image: Image.Image, amount: float) -> Image.Image:
 
 
 def _perception_target_image(image: Image.Image, perception: Dict[str, float]) -> Image.Image:
-    def slider(key: str) -> float:
-        return max(-1.0, min((float(perception.get(key, 50.0)) - 50.0) / 50.0, 1.0))
+    def weight(key: str) -> float:
+        return max(0.0, min(float(perception.get(key, 0.0)) / 100.0, 1.0))
 
     target = image.convert("RGB")
-    blurry = slider("blurry")
-    sharpness = slider("sharpness")
-    contrast = slider("contrast")
-    saturation = slider("saturation")
-    warmth = slider("warmth")
+    blurry = weight("blurry")
+    sharpness = weight("sharpness")
+    contrast = weight("contrast")
+    saturation = weight("saturation")
+    warmth = weight("warmth")
 
-    blur_amount = max(0.0, blurry, -sharpness)
-    sharp_amount = max(0.0, sharpness, -blurry)
+    blur_amount = blurry if blurry >= sharpness else 0.0
+    sharp_amount = sharpness if sharpness > blurry else 0.0
     if blur_amount > 0.04:
-        target = target.filter(ImageFilter.GaussianBlur(radius=1.0 + blur_amount * 6.0))
+        target = target.filter(ImageFilter.GaussianBlur(radius=2.0 + blur_amount * 10.0))
     if sharp_amount > 0.04:
         target = target.filter(
             ImageFilter.UnsharpMask(
@@ -388,7 +393,7 @@ def _perception_target_image(image: Image.Image, perception: Dict[str, float]) -
     if abs(contrast) > 0.04:
         target = ImageEnhance.Contrast(target).enhance(1.0 + contrast * 0.75)
     if abs(saturation) > 0.04:
-        target = ImageEnhance.Color(target).enhance(max(0.05, 1.0 + saturation * 0.95))
+        target = ImageEnhance.Color(target).enhance(1.0 + saturation * 0.95)
     if abs(warmth) > 0.04:
         target = _apply_warmth_image(target, warmth)
     return target

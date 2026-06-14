@@ -69,16 +69,23 @@ def image_features(image: Image.Image) -> FeatureMap:
 
 
 def perception_to_targets(perception: PerceptionMap, base_features: FeatureMap) -> FeatureMap:
-    targets: FeatureMap = {}
+    targets: FeatureMap = dict(base_features)
+    positive_keys = ("contrast", "saturation", "warmth")
     for key in FEATURE_KEYS:
-        slider = float(perception.get(key, 50.0))
-        slider = float(np.clip(slider, 0.0, 100.0))
+        targets.setdefault(key, base_features.get(key, 0.5))
+
+    for key in positive_keys:
+        amount = float(np.clip(perception.get(key, 0.0), 0.0, 100.0)) / 100.0
         neutral = base_features.get(key, 0.5)
-        targets[key] = float(np.clip(neutral + ((slider - 50.0) / 50.0) * 0.38, 0.02, 0.98))
-    blurry = float(np.clip(perception.get("blurry", 50.0), 0.0, 100.0))
-    if blurry != 50.0:
-        blur_direction = (blurry - 50.0) / 50.0
-        targets["sharpness"] = float(np.clip(targets["sharpness"] - blur_direction * 0.38, 0.02, 0.98))
+        targets[key] = float(np.clip(neutral + amount * 0.38, 0.02, 0.98))
+
+    blurry = float(np.clip(perception.get("blurry", 0.0), 0.0, 100.0)) / 100.0
+    sharpness = float(np.clip(perception.get("sharpness", 0.0), 0.0, 100.0)) / 100.0
+    neutral_sharpness = base_features.get("sharpness", 0.5)
+    if blurry >= sharpness and blurry > 0.0:
+        targets["sharpness"] = float(np.clip(neutral_sharpness - blurry * 0.58, 0.01, 0.98))
+    elif sharpness > 0.0:
+        targets["sharpness"] = float(np.clip(neutral_sharpness + sharpness * 0.38, 0.02, 0.98))
     return targets
 
 
@@ -203,17 +210,21 @@ def propose_image(current: Image.Image, perception: PerceptionMap, rng: np.rando
     step = float(np.clip(step_size, 0.08, 1.0))
     proposal = current.copy()
 
-    def direction(key: str) -> float:
-        return float(np.clip((float(perception.get(key, 50.0)) - 50.0) / 50.0, -1.0, 1.0))
+    def weight(key: str) -> float:
+        return float(np.clip(float(perception.get(key, 0.0)) / 100.0, 0.0, 1.0))
 
-    proposal = ImageEnhance.Brightness(proposal).enhance(1.0 + direction("brightness") * 0.24 * step + rng.normal(0.0, 0.018))
-    proposal = ImageEnhance.Contrast(proposal).enhance(1.0 + direction("contrast") * 0.34 * step + rng.normal(0.0, 0.02))
-    proposal = ImageEnhance.Color(proposal).enhance(1.0 + direction("saturation") * 0.34 * step + rng.normal(0.0, 0.018))
-    proposal = ImageEnhance.Sharpness(proposal).enhance(1.0 + direction("sharpness") * 0.9 * step + rng.normal(0.0, 0.035))
-    proposal = _apply_warmth(proposal, direction("warmth"), step)
-    proposal = _apply_focus(proposal, direction("focus"), step, rng)
+    blurry = weight("blurry")
+    sharpness = weight("sharpness")
+    proposal = ImageEnhance.Contrast(proposal).enhance(1.0 + weight("contrast") * 0.34 * step + rng.normal(0.0, 0.02))
+    proposal = ImageEnhance.Color(proposal).enhance(1.0 + weight("saturation") * 0.34 * step + rng.normal(0.0, 0.018))
+    proposal = _apply_warmth(proposal, weight("warmth"), step)
+    if blurry >= sharpness and blurry > 0.04:
+        proposal = proposal.filter(ImageFilter.GaussianBlur(radius=0.8 + blurry * 3.2 * step))
+    else:
+        proposal = ImageEnhance.Sharpness(proposal).enhance(1.0 + sharpness * 0.9 * step + rng.normal(0.0, 0.035))
+        proposal = _apply_focus(proposal, sharpness, step, rng)
 
-    if rng.random() < 0.42:
+    if blurry < sharpness and rng.random() < 0.42:
         proposal = proposal.filter(ImageFilter.UnsharpMask(radius=0.8 + step, percent=int(70 + step * 110), threshold=4))
 
     arr = np.asarray(proposal.convert("RGB"), dtype=np.float32)
