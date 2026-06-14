@@ -1,52 +1,45 @@
 # StoryDraw
 
-StoryDraw turns rough doodles into cartoon storybook images with a React
-frontend and a Modal GPU backend.
+StoryDraw is a sketch-conditioned cartoon generation app built around the
+SemanticDraw idea of interactive visual creation. A user draws a rough scene,
+keeps an optional prompt in plain language, and sends the doodle to a GPU-backed
+diffusion service that turns the sketch into a cleaner children's storybook
+cartoon.
 
-The repo is intentionally split for deployment:
+The project is structured as a deployable product rather than a notebook demo.
+The frontend is a Vercel-ready React app, while model inference lives behind a
+Modal API service so GPU work is isolated from the browser experience.
 
-- `apps/web`: Vercel-ready React app
-- `services/modal`: Modal API service for diffusion inference
-- `semantic-draw`: upstream SemanticDraw research code retained as reference
+## What Is In This Repo
 
-## Local Frontend
+- `apps/web` contains the React drawing interface, prompt bar, live generation
+  flow, and warm/cool controls for the remote model container.
+- `services/modal` contains the Modal API service that loads Stable Diffusion
+  1.5 with ControlNet Scribble conditioning and an LCM LoRA for lower-latency
+  inference.
+- `semantic-draw` keeps the upstream SemanticDraw research code available as a
+  reference point for interactive drawing workflows.
+- `docs` contains architecture notes for the frontend/backend split and model
+  serving path.
 
-```bash
-cd apps/web
-npm install
-VITE_MODAL_API_URL="https://srikarv05--story-cartoon-api-api.modal.run" npm run dev
-```
+## Product Shape
 
-## Modal API
+The app is designed around a side-by-side creative loop: the left panel is the
+input doodle and the right panel is the generated cartoon output. Drawing is
+locked until the Modal container is warmed, which makes GPU state explicit in
+the UI and avoids silent paid inference startup. The prompt is optional; when it
+is left empty, the app uses a default prompt tuned for simple, layout-preserving
+storybook cartoon output.
 
-Use your private Modal profile:
+## Model Path
 
-```bash
-python3 -m modal profile activate srikarv05
-python3 -m modal serve services/modal/story_cartoon_api.py
-```
+Generation is handled through a real diffusion pipeline on Modal:
 
-For a stable backend URL:
+- Base image model: Stable Diffusion 1.5
+- Sketch conditioning: ControlNet Scribble
+- Latency optimization: LCM LoRA
+- GPU target: Modal A10G
 
-```bash
-python3 -m modal deploy services/modal/story_cartoon_api.py
-```
-
-Then set `VITE_MODAL_API_URL` in Vercel to the deployed Modal URL.
-
-## Vercel
-
-Root deploy works through `vercel.json`.
-
-Environment variable:
-
-```text
-VITE_MODAL_API_URL=<your Modal API URL>
-```
-
-## Current Model
-
-- Base: `runwayml/stable-diffusion-v1-5`
-- Control: `lllyasviel/sd-controlnet-scribble`
-- Speed: `latent-consistency/lcm-lora-sdv1-5`
-- GPU: Modal A10G
+The frontend sends the current canvas image and prompt to the Modal API. The
+backend preprocesses the doodle into a scribble control image, runs diffusion
+inference, and returns the generated image as a browser-renderable response.
